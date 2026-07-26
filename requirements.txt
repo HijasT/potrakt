@@ -1,0 +1,4 @@
+requests
+guessit
+pywin32
+pillow
