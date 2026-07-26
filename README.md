@@ -106,3 +106,7 @@ resolved against Trakt's `/search` endpoint.
 - `config.json` (your Trakt credentials/tokens) and `history.jsonl` (your watch history)
   are personal and gitignored - see `config.example.json` for the expected shape.
 - Windows only - it relies on Win32 APIs (`SendMessage`, window enumeration, registry).
+
+## License
+
+[GPL-3.0](LICENSE)
