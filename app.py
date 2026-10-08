@@ -755,7 +755,16 @@ class RatingsWindow(tk.Toplevel):
     def _loaded(self, data):
         self.data = data
         self.refresh_btn.configure(state="normal")
-        self.status.configure(text="Showing the most recent unrated items you've watched.", fg=MUTED)
+        counts = ", ".join(f"{len(data.get(k, []))} {label.lower()}"
+                            for k, label, _ in RATING_TABS)
+        total = sum(len(v) for v in data.values())
+        if total:
+            self.status.configure(text=f"Unrated: {counts}.", fg=MUTED)
+        else:
+            self.status.configure(
+                text="Nothing watched-but-unrated found on Trakt. (Only items you've "
+                     "watched on Trakt show up here — failed scrobbles don't count.)",
+                fg=MUTED)
         for key, _, _ in RATING_TABS:
             self._populate(key)
 

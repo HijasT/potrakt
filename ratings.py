@@ -12,6 +12,11 @@ LIMIT_SEASONS = 20
 LIMIT_EPISODES = 50
 
 
+def _title(obj):
+    """Display title from a Trakt movie/show object, tolerant of minimal payloads."""
+    return obj.get("title") or (obj.get("ids") or {}).get("slug") or "Unknown"
+
+
 def _recent(items, limit):
     """Sort by watched-at (ISO strings sort chronologically) newest-first, take
     `limit`, and drop the sort key from each media dict."""
@@ -45,7 +50,7 @@ def compute(watched_movies, watched_shows, rated_movies, rated_shows,
     show_avg = {k: sum(v) / len(v) for k, v in season_by_show.items()}
 
     movies = [
-        {"kind": "movie", "title": m["movie"]["title"],
+        {"kind": "movie", "title": _title(m["movie"]),
          "year": m["movie"].get("year"), "ids": m["movie"]["ids"]}
         for m in watched_movies if m["movie"]["ids"]["trakt"] not in rated_movie
     ]
@@ -55,18 +60,18 @@ def compute(watched_movies, watched_shows, rated_movies, rated_shows,
         sh = s["show"]
         sid = sh["ids"]["trakt"]
         if sid not in rated_show:
-            shows.append({"kind": "show", "title": sh["title"], "ids": sh["ids"],
+            shows.append({"kind": "show", "title": _title(sh), "ids": sh["ids"],
                           "avg": show_avg.get(sid), "_at": s.get("last_watched_at")})
         for season in s.get("seasons", []):
             snum = season["number"]
             if (sid, snum) not in rated_season:
-                seasons.append({"kind": "season", "title": sh["title"], "ids": sh["ids"],
+                seasons.append({"kind": "season", "title": _title(sh), "ids": sh["ids"],
                                 "season": snum, "avg": season_avg.get((sid, snum)),
                                 "_at": season.get("last_watched_at")})
             for ep in season.get("episodes", []):
                 enum = ep["number"]
                 if (sid, snum, enum) not in rated_ep:
-                    episodes.append({"kind": "episode", "title": sh["title"], "ids": sh["ids"],
+                    episodes.append({"kind": "episode", "title": _title(sh), "ids": sh["ids"],
                                      "season": snum, "episode": enum,
                                      "_at": ep.get("last_watched_at")})
     return {
