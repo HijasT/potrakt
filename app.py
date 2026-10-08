@@ -122,13 +122,10 @@ class SetupFrame(tk.Frame):
         uri_box.configure(state="readonly", readonlybackground=PANEL)
         uri_box.pack(fill="x", pady=(4, 0), ipady=4)
 
-        body(self, "3. Paste your Client ID below (Client Secret only if your app has one):").pack(anchor="w", pady=(4, 8))
+        body(self, "3. Paste your Client ID below:").pack(anchor="w", pady=(4, 8))
 
         self.client_id_var = tk.StringVar()
-        self.client_secret_var = tk.StringVar()
-
         self._labeled_entry(self, "Client ID", self.client_id_var)
-        self._labeled_entry(self, "Client Secret (leave blank for new apps)", self.client_secret_var, show="*")
 
         self.error_lbl = tk.Label(self, text="", fg="#ff8080", bg=BG, font=("Segoe UI", 9))
         self.error_lbl.pack(anchor="w", pady=(6, 0))
@@ -150,11 +147,10 @@ class SetupFrame(tk.Frame):
 
     def on_continue(self):
         cid = self.client_id_var.get().strip()
-        secret = self.client_secret_var.get().strip()
         if not cid:
             self.error_lbl.configure(text="Client ID is required.")
             return
-        self.app.client.set_credentials(cid, secret)
+        self.app.client.set_credentials(cid, "")
         self.app.show(AuthFrame)
 
 
