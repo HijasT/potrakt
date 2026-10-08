@@ -20,7 +20,15 @@ class TraktClient:
         self.cfg = config.load()
 
     def has_credentials(self):
-        return bool(self.cfg["client_id"] and self.cfg["client_secret"])
+        # Trakt stopped issuing client_secret for apps created after 2026-10-01
+        # (PKCE-style; device flow needs no code_verifier). Secret is optional now.
+        return bool(self.cfg["client_id"])
+
+    def _oauth_body(self, **fields):
+        body = {"client_id": self.cfg["client_id"], **fields}
+        if self.cfg.get("client_secret"):
+            body["client_secret"] = self.cfg["client_secret"]
+        return body
 
     def has_token(self):
         return bool(self.cfg.get("access_token"))
@@ -69,11 +77,7 @@ class TraktClient:
         """
         resp = requests.post(
             f"{API_BASE}/oauth/device/token",
-            json={
-                "code": device_code,
-                "client_id": self.cfg["client_id"],
-                "client_secret": self.cfg["client_secret"],
-            },
+            json=self._oauth_body(code=device_code),
         )
         if resp.status_code == 200:
             self._store_token(resp.json())
@@ -109,12 +113,10 @@ class TraktClient:
     def _refresh(self):
         r = requests.post(
             f"{API_BASE}/oauth/token",
-            json={
-                "refresh_token": self.cfg["refresh_token"],
-                "client_id": self.cfg["client_id"],
-                "client_secret": self.cfg["client_secret"],
-                "grant_type": "refresh_token",
-            },
+            json=self._oauth_body(
+                refresh_token=self.cfg["refresh_token"],
+                grant_type="refresh_token",
+            ),
         )
         r.raise_for_status()
         self._store_token(r.json())
@@ -155,3 +157,34 @@ class TraktClient:
         r = requests.post(f"{API_BASE}/sync/ratings", json=payload, headers=self.headers())
         r.raise_for_status()
         return r.json()
+
+    # ---- watched / unrated ----
+
+    def _get_paged(self, path, params=None):
+        """GET every page of a paginated endpoint. Trakt enforced pagination on
+        the watched endpoints in 2026 (100/page with extended=progress), so a
+        single GET only returns the first page now."""
+        params = dict(params or {})
+        params["limit"] = 100
+        page, out = 1, []
+        while True:
+            params["page"] = page
+            r = requests.get(f"{API_BASE}{path}", params=params, headers=self.headers())
+            r.raise_for_status()
+            out.extend(r.json())
+            total = int(r.headers.get("X-Pagination-Page-Count") or 1)
+            if page >= total:
+                return out
+            page += 1
+
+    def watched_movies(self):
+        return self._get_paged("/sync/watched/movies")
+
+    def watched_shows(self):
+        # extended=progress is required now to get the season/episode breakdown;
+        # the new default omits it.
+        return self._get_paged("/sync/watched/shows", {"extended": "full,progress"})
+
+    def ratings(self, media_type):
+        """media_type in {movies, shows, seasons, episodes}."""
+        return self._get_paged(f"/sync/ratings/{media_type}")

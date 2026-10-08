@@ -11,6 +11,7 @@ import autorun
 import config
 import history
 import installer
+import ratings
 from matcher import identify
 from paths import resource_dir
 from potplayer_ctl import get_state
@@ -121,13 +122,13 @@ class SetupFrame(tk.Frame):
         uri_box.configure(state="readonly", readonlybackground=PANEL)
         uri_box.pack(fill="x", pady=(4, 0), ipady=4)
 
-        body(self, "3. Paste your Client ID and Client Secret below:").pack(anchor="w", pady=(4, 8))
+        body(self, "3. Paste your Client ID below (Client Secret only if your app has one):").pack(anchor="w", pady=(4, 8))
 
         self.client_id_var = tk.StringVar()
         self.client_secret_var = tk.StringVar()
 
         self._labeled_entry(self, "Client ID", self.client_id_var)
-        self._labeled_entry(self, "Client Secret", self.client_secret_var, show="*")
+        self._labeled_entry(self, "Client Secret (leave blank for new apps)", self.client_secret_var, show="*")
 
         self.error_lbl = tk.Label(self, text="", fg="#ff8080", bg=BG, font=("Segoe UI", 9))
         self.error_lbl.pack(anchor="w", pady=(6, 0))
@@ -150,8 +151,8 @@ class SetupFrame(tk.Frame):
     def on_continue(self):
         cid = self.client_id_var.get().strip()
         secret = self.client_secret_var.get().strip()
-        if not cid or not secret:
-            self.error_lbl.configure(text="Both fields are required.")
+        if not cid:
+            self.error_lbl.configure(text="Client ID is required.")
             return
         self.app.client.set_credentials(cid, secret)
         self.app.show(AuthFrame)
@@ -276,6 +277,7 @@ class DashboardFrame(tk.Frame):
         actions_row.pack(fill="x", pady=(6, 0))
         secondary_button(actions_row, "View on Trakt", self.view_on_trakt).pack(side="left")
         secondary_button(actions_row, "History", self.open_history).pack(side="left", padx=(8, 0))
+        secondary_button(actions_row, "Unrated", self.open_ratings).pack(side="left", padx=(8, 0))
         secondary_button(actions_row, "Create shortcuts", self.create_shortcuts).pack(side="left", padx=(8, 0))
 
         settings_row = tk.Frame(self, bg=BG)
@@ -338,6 +340,9 @@ class DashboardFrame(tk.Frame):
 
     def open_history(self):
         HistoryWindow(self.app, self.client)
+
+    def open_ratings(self):
+        RatingsWindow(self.app, self.client)
 
     def create_shortcuts(self, silent=False):
         try:
@@ -406,8 +411,14 @@ def build_payload(media, progress):
 
 
 def build_rating_payload(media, rating):
-    if media["kind"] == "movie":
+    kind = media["kind"]
+    if kind == "movie":
         return {"movies": [{"ids": media["ids"], "rating": rating}]}
+    if kind == "show":
+        return {"shows": [{"ids": media["ids"], "rating": rating}]}
+    if kind == "season":
+        return {"shows": [{"ids": media["ids"],
+                           "seasons": [{"number": media["season"], "rating": rating}]}]}
     return {
         "shows": [
             {
@@ -421,9 +432,14 @@ def build_rating_payload(media, rating):
 
 
 def display_name(media):
-    if media["kind"] == "movie":
+    kind = media["kind"]
+    if kind == "movie":
         year = f" ({media['year']})" if media.get("year") else ""
         return f"{media['title']}{year}"
+    if kind == "show":
+        return media["title"]
+    if kind == "season":
+        return f"{media['title']} — Season {media['season']}"
     return f"{media['title']} S{media['season']:02d}E{media['episode']:02d}"
 
 
@@ -432,8 +448,13 @@ def trakt_url(media):
     if not ids:
         return None
     ref = ids.get("slug") or str(ids.get("trakt"))
-    if media["kind"] == "movie":
+    kind = media["kind"]
+    if kind == "movie":
         return f"https://trakt.tv/movies/{ref}"
+    if kind == "show":
+        return f"https://trakt.tv/shows/{ref}"
+    if kind == "season":
+        return f"https://trakt.tv/shows/{ref}/seasons/{media['season']}"
     return f"https://trakt.tv/shows/{ref}/seasons/{media['season']}/episodes/{media['episode']}"
 
 
@@ -669,6 +690,134 @@ class HistoryWindow(tk.Toplevel):
             webbrowser.open(url)
         else:
             messagebox.showinfo("potrakt", "No Trakt match for this item.")
+
+
+def _scroll_frame(parent):
+    """A vertically scrollable frame; returns the inner frame to pack rows into."""
+    canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+    inner = tk.Frame(canvas, bg=BG)
+    inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.create_window((0, 0), window=inner, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    return inner
+
+
+# (tab key, label, sublabel prefix for the per-item average — None = no average)
+RATING_TABS = [
+    ("episodes", "Episodes", None),
+    ("seasons", "Seasons", "avg episode rating"),
+    ("shows", "Shows", "avg season rating"),
+    ("movies", "Movies", None),
+]
+
+
+class RatingsWindow(tk.Toplevel):
+    """Watched-but-unrated items (from Trakt), in tabs, with inline rating."""
+
+    def __init__(self, parent, client):
+        super().__init__(parent)
+        self.client = client
+        self.data = {}
+        self.title("potrakt - Unrated")
+        self.geometry("680x540")
+        self.configure(bg=BG)
+
+        top = tk.Frame(self, bg=BG)
+        top.pack(fill="x", padx=16, pady=(16, 8))
+        heading(top, "Unrated").pack(side="left")
+        self.refresh_btn = secondary_button(top, "Refresh", self.load)
+        self.refresh_btn.pack(side="right")
+
+        self.status = tk.Label(self, text="", fg=MUTED, bg=BG, font=("Segoe UI", 9))
+        self.status.pack(anchor="w", padx=16)
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=16, pady=(4, 16))
+
+        self.tabs = {}  # key -> (tab frame, inner rows frame)
+        for key, label, _ in RATING_TABS:
+            tab = tk.Frame(self.notebook, bg=BG)
+            self.notebook.add(tab, text=label)
+            self.tabs[key] = (tab, _scroll_frame(tab))
+
+        self.load()
+
+    def load(self):
+        self.refresh_btn.configure(state="disabled")
+        self.status.configure(text="Loading your watched + rated history from Trakt...", fg=MUTED)
+        threading.Thread(target=self._fetch, daemon=True).start()
+
+    def _fetch(self):
+        try:
+            self.client.ensure_token()
+            data = ratings.compute(
+                self.client.watched_movies(),
+                self.client.watched_shows(),
+                self.client.ratings("movies"),
+                self.client.ratings("shows"),
+                self.client.ratings("seasons"),
+                self.client.ratings("episodes"),
+            )
+        except Exception as exc:
+            self.after(0, lambda: self._failed(exc))
+            return
+        self.after(0, lambda: self._loaded(data))
+
+    def _failed(self, exc):
+        self.refresh_btn.configure(state="normal")
+        self.status.configure(text=f"Couldn't load from Trakt: {exc}", fg="#ff8080")
+
+    def _loaded(self, data):
+        self.data = data
+        self.refresh_btn.configure(state="normal")
+        self.status.configure(text="Showing the most recent unrated items you've watched.", fg=MUTED)
+        for key, _, _ in RATING_TABS:
+            self._populate(key)
+
+    def _populate(self, key):
+        _, label, avg_prefix = next(t for t in RATING_TABS if t[0] == key)
+        tab, inner = self.tabs[key]
+        for child in inner.winfo_children():
+            child.destroy()
+
+        items = self.data.get(key, [])
+        self.notebook.tab(tab, text=f"{label} ({len(items)})")
+        if not items:
+            tk.Label(inner, text="Nothing unrated here — nice.", fg=MUTED, bg=BG,
+                     font=("Segoe UI", 10)).pack(anchor="w", pady=8)
+            return
+        for media in items:
+            self._build_row(key, inner, media, avg_prefix)
+
+    def _build_row(self, key, parent, media, avg_prefix):
+        row = tk.Frame(parent, bg=PANEL)
+        row.pack(fill="x", pady=3, padx=(0, 4))
+
+        info = tk.Frame(row, bg=PANEL)
+        info.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=8)
+        tk.Label(info, text=display_name(media), fg=FG, bg=PANEL,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        if avg_prefix:
+            avg = media.get("avg")
+            sub = f"{avg_prefix}: {avg:.1f}/10" if avg is not None else f"{avg_prefix}: none yet"
+            tk.Label(info, text=sub, fg=MUTED, bg=PANEL, font=("Segoe UI", 9)).pack(anchor="w")
+
+        actions = tk.Frame(row, bg=PANEL)
+        actions.pack(side="right", padx=10, pady=8)
+        secondary_button(actions, "Rate", lambda: self._rate(key, media)).pack(side="left", padx=(0, 6))
+        secondary_button(actions, "View on Trakt",
+                         lambda: webbrowser.open(trakt_url(media))).pack(side="left")
+
+    def _rate(self, key, media):
+        RatingPopup(self, self.client, media, on_rated=lambda n: self._rated(key, media))
+
+    def _rated(self, key, media):
+        # It's rated now, so drop it from the unrated list and repaint that tab.
+        self.data[key] = [m for m in self.data.get(key, []) if m is not media]
+        self._populate(key)
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ def main():
     client = TraktClient()
     if not client.has_credentials():
         print(
-            "config.json is missing client_id/client_secret. Create an app at "
+            "config.json is missing client_id. Create an app at "
             "https://trakt.tv/oauth/applications (redirect uri: "
             "urn:ietf:wg:oauth:2.0:oob) and fill in config.json, then rerun.\n"
             "Or run 'python app.py' for a guided setup window."
