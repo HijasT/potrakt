@@ -449,6 +449,9 @@ def resolve(client, parsed, events):
             match = client.search_show(parsed["title"])
         if match:
             parsed["ids"] = match["ids"]
+            events.put(("log", f"Matched '{parsed['title']}' on Trakt"))
+        else:
+            events.put(("log", f"No Trakt match for '{parsed['title']}' - will scrobble by title"))
     except Exception as exc:
         events.put(("log", f"Search failed, scrobbling by title only: {exc}"))
     return parsed

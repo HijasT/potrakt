@@ -128,6 +128,11 @@ class TraktClient:
 
     def scrobble(self, action, payload):
         r = requests.post(f"{API_BASE}/scrobble/{action}", json=payload, headers=self.headers())
+        if r.status_code == 404:
+            raise RuntimeError(
+                "Trakt couldn't match this title/episode (404) - the filename guess "
+                "was probably wrong, so there's nothing to scrobble"
+            )
         r.raise_for_status()
         return r.json()
 
