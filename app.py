@@ -450,6 +450,12 @@ def resolve(client, parsed, events):
         if match:
             parsed["ids"] = match["ids"]
             events.put(("log", f"Matched '{parsed['title']}' on Trakt"))
+            if parsed["kind"] == "episode":
+                loc = client.locate_episode(match["ids"]["trakt"], parsed["season"], parsed["episode"])
+                if loc != (parsed["season"], parsed["episode"]):
+                    events.put(("log", f"Remapped E{parsed['episode']} (absolute) to "
+                                       f"S{loc[0]:02d}E{loc[1]:02d}"))
+                    parsed["season"], parsed["episode"] = loc
         else:
             events.put(("log", f"No Trakt match for '{parsed['title']}' - will scrobble by title"))
     except Exception as exc:

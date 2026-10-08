@@ -15,6 +15,18 @@ AUTHORIZE_URL = "https://auth.trakt.tv/oauth/authorize"
 REDIRECT_URI = "https://hijast.github.io/potrakt/callback/"
 
 
+def pick_episode_location(by_sn, by_abs, season, number):
+    """Map a guessed (season, number) to the real Trakt one. Release groups
+    often label anime with a season but an absolute episode number (e.g. Black
+    Clover 'S3 E140'), which Trakt stores under a different season/number. Prefer
+    an exact season+number hit, else fall back to the absolute-number match."""
+    if (season, number) in by_sn:
+        return season, number
+    if number in by_abs:
+        return by_abs[number]
+    return season, number
+
+
 def new_pkce():
     """Return (code_verifier, code_challenge) for a PKCE S256 exchange."""
     verifier = secrets.token_urlsafe(64)[:128]  # URL-safe, within 43-128 chars
@@ -173,3 +185,33 @@ class TraktClient:
     def ratings(self, media_type):
         """media_type in {movies, shows, seasons, episodes}."""
         return self._get_paged(f"/sync/ratings/{media_type}")
+
+    # ---- episode location (anime absolute-numbering fix) ----
+
+    def _episode_index(self, show_id):
+        """(by_sn, by_abs) for a show, cached per client. by_sn maps
+        (season, number)->itself; by_abs maps absolute number->(season, number)."""
+        cache = self.__dict__.setdefault("_ep_cache", {})
+        if show_id not in cache:
+            r = requests.get(
+                f"{API_BASE}/shows/{show_id}/seasons",
+                params={"extended": "episodes,full"}, headers=self.headers(),
+            )
+            r.raise_for_status()
+            by_sn, by_abs = {}, {}
+            for s in r.json():
+                for ep in s.get("episodes", []):
+                    loc = (s["number"], ep["number"])
+                    by_sn[loc] = loc
+                    if ep.get("number_abs") is not None:
+                        by_abs[ep["number_abs"]] = loc
+            cache[show_id] = (by_sn, by_abs)
+        return cache[show_id]
+
+    def locate_episode(self, show_id, season, number):
+        """Best (season, number) to scrobble; falls back to the input on error."""
+        try:
+            by_sn, by_abs = self._episode_index(show_id)
+        except Exception:
+            return season, number
+        return pick_episode_location(by_sn, by_abs, season, number)
