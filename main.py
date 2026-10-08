@@ -1,10 +1,24 @@
+import secrets
 import time
+import webbrowser
 
+import trakt_client
 from matcher import identify
 from potplayer_ctl import get_state
 from trakt_client import TraktClient
 
 POLL_INTERVAL_SECONDS = 10
+
+
+def cli_authorize(client):
+    """PKCE auth for the headless runner: open the authorize page, paste the code."""
+    verifier, challenge = trakt_client.new_pkce()
+    url = client.authorize_url(challenge, state=secrets.token_hex(8))
+    print(f"\nAuthorize potrakt here (opening in your browser):\n{url}\n")
+    webbrowser.open(url)
+    code = input("Paste the authorization code shown after approving: ").strip()
+    client.exchange_code(code, verifier)
+    print("Authenticated with Trakt.\n")
 
 
 def build_payload(media, progress):
@@ -41,11 +55,13 @@ def main():
     if not client.has_credentials():
         print(
             "config.json is missing client_id. Create an app at "
-            "https://trakt.tv/oauth/applications (redirect uri: "
-            "urn:ietf:wg:oauth:2.0:oob) and fill in config.json, then rerun.\n"
+            "https://developer.trakt.tv (redirect uri: "
+            f"{trakt_client.REDIRECT_URI}) and fill in config.json, then rerun.\n"
             "Or run 'python app.py' for a guided setup window."
         )
         return
+    if not client.has_token():
+        cli_authorize(client)
     client.ensure_token()
 
     current_file = None

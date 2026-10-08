@@ -1,18 +1,26 @@
+import base64
+import hashlib
+import secrets
 import time
+import urllib.parse
 
 import requests
 
 import config
 
 API_BASE = "https://api.trakt.tv"
+AUTHORIZE_URL = "https://auth.trakt.tv/oauth/authorize"
+# Trakt requires an https redirect URI (no OOB / localhost). This static page
+# just displays the ?code= for the user to paste back into potrakt.
+REDIRECT_URI = "https://hijast.github.io/potrakt/callback/"
 
 
-class AuthPending(Exception):
-    """Raised by poll_device_token while the user hasn't authorized yet."""
-
-
-class AuthDenied(Exception):
-    """Raised by poll_device_token if the user denied or the code expired."""
+def new_pkce():
+    """Return (code_verifier, code_challenge) for a PKCE S256 exchange."""
+    verifier = secrets.token_urlsafe(64)[:128]  # URL-safe, within 43-128 chars
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return verifier, challenge
 
 
 class TraktClient:
@@ -20,22 +28,15 @@ class TraktClient:
         self.cfg = config.load()
 
     def has_credentials(self):
-        # Trakt stopped issuing client_secret for apps created after 2026-10-01
-        # (PKCE-style; device flow needs no code_verifier). Secret is optional now.
+        # Trakt no longer issues a client_secret; PKCE signs users in with the
+        # client_id alone (see the auth flow below).
         return bool(self.cfg["client_id"])
-
-    def _oauth_body(self, **fields):
-        body = {"client_id": self.cfg["client_id"], **fields}
-        if self.cfg.get("client_secret"):
-            body["client_secret"] = self.cfg["client_secret"]
-        return body
 
     def has_token(self):
         return bool(self.cfg.get("access_token"))
 
-    def set_credentials(self, client_id, client_secret):
+    def set_credentials(self, client_id):
         self.cfg["client_id"] = client_id.strip()
-        self.cfg["client_secret"] = client_secret.strip()
         config.save(self.cfg)
 
     def sign_out(self):
@@ -55,76 +56,55 @@ class TraktClient:
     # ---- auth ----
 
     def ensure_token(self):
-        if not self.cfg.get("access_token"):
-            self._device_auth()
-        elif time.time() > self.cfg.get("expires_at", 0) - 60:
+        # No interactive auth here: the GUI/CLI drives the PKCE flow explicitly.
+        if self.cfg.get("access_token") and time.time() > self.cfg.get("expires_at", 0) - 60:
             self._refresh()
 
-    def request_device_code(self):
-        """Step 1 of device auth: get a user_code + verification_url to show."""
+    def authorize_url(self, code_challenge, state):
+        """The URL to send the user to; they approve and get an authorization
+        code back via the redirect page."""
+        q = urllib.parse.urlencode({
+            "response_type": "code",
+            "client_id": self.cfg["client_id"],
+            "redirect_uri": REDIRECT_URI,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        })
+        return f"{AUTHORIZE_URL}?{q}"
+
+    def exchange_code(self, code, code_verifier):
+        """Trade the pasted authorization code for tokens (PKCE, no secret)."""
         r = requests.post(
-            f"{API_BASE}/oauth/device/code",
-            json={"client_id": self.cfg["client_id"]},
+            f"{API_BASE}/oauth/token",
+            json={
+                "code": code.strip(),
+                "client_id": self.cfg["client_id"],
+                "redirect_uri": REDIRECT_URI,
+                "code_verifier": code_verifier,
+                "grant_type": "authorization_code",
+            },
         )
         r.raise_for_status()
-        return r.json()
-
-    def poll_device_token(self, device_code):
-        """Step 2, call repeatedly (every `interval` seconds) until it returns True.
-
-        Raises AuthPending while waiting, AuthDenied if expired/denied, or
-        re-raises HTTP errors for anything else (e.g. bad credentials).
-        """
-        resp = requests.post(
-            f"{API_BASE}/oauth/device/token",
-            json=self._oauth_body(code=device_code),
-        )
-        if resp.status_code == 200:
-            self._store_token(resp.json())
-            return True
-        if resp.status_code == 400:
-            raise AuthPending()
-        if resp.status_code == 429:
-            raise AuthPending()
-        if resp.status_code in (404, 409, 410, 418):
-            raise AuthDenied(resp.json().get("error_description", "authorization denied"))
-        resp.raise_for_status()
-        return False
-
-    def _device_auth(self):
-        """Blocking CLI-friendly device auth flow (used by main.py)."""
-        data = self.request_device_code()
-        print(f"\nGo to {data['verification_url']} and enter code: {data['user_code']}\n")
-
-        interval = data["interval"]
-        deadline = time.time() + data["expires_in"]
-
-        while time.time() < deadline:
-            time.sleep(interval)
-            try:
-                if self.poll_device_token(data["device_code"]):
-                    print("Authenticated with Trakt.\n")
-                    return
-            except AuthPending:
-                continue
-
-        raise RuntimeError("Trakt device authorization timed out.")
+        self._store_token(r.json())
 
     def _refresh(self):
         r = requests.post(
             f"{API_BASE}/oauth/token",
-            json=self._oauth_body(
-                refresh_token=self.cfg["refresh_token"],
-                grant_type="refresh_token",
-            ),
+            json={
+                "refresh_token": self.cfg["refresh_token"],
+                "client_id": self.cfg["client_id"],
+                "redirect_uri": REDIRECT_URI,
+                "grant_type": "refresh_token",
+            },
         )
         r.raise_for_status()
         self._store_token(r.json())
 
     def _store_token(self, tok):
         self.cfg["access_token"] = tok["access_token"]
-        self.cfg["refresh_token"] = tok["refresh_token"]
-        self.cfg["expires_at"] = time.time() + tok["expires_in"]
+        self.cfg["refresh_token"] = tok.get("refresh_token", "")
+        self.cfg["expires_at"] = time.time() + tok.get("expires_in", 0)
         config.save(self.cfg)
 
     # ---- search ----

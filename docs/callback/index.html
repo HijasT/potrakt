@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>potrakt — authorization code</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center;
+         justify-content: center; background: #1e1f26; color: #f2f2f5;
+         font-family: "Segoe UI", system-ui, sans-serif; }
+  .card { width: min(92vw, 460px); background: #262834; border-radius: 12px;
+          padding: 28px; box-sizing: border-box; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p { color: #9a9cad; font-size: 14px; line-height: 1.5; margin: 0 0 16px; }
+  .code { font-family: Consolas, monospace; font-size: 15px; background: #1e1f26;
+          border-radius: 8px; padding: 14px; word-break: break-all; user-select: all; }
+  button { margin-top: 14px; width: 100%; border: 0; border-radius: 8px; padding: 12px;
+           background: #ed1c24; color: #fff; font-size: 14px; font-weight: 600;
+           cursor: pointer; }
+  button:active { background: #c8171e; }
+  .err { color: #ff8080; }
+</style>
+</head>
+<body>
+  <div class="card" id="card">
+    <h1>Almost there</h1>
+    <p>Copy this authorization code and paste it back into potrakt:</p>
+    <div class="code" id="code">(no code found)</div>
+    <button id="copy">Copy code</button>
+  </div>
+<script>
+  var p = new URLSearchParams(location.search);
+  var code = p.get("code");
+  var err = p.get("error");
+  var card = document.getElementById("card");
+  var codeEl = document.getElementById("code");
+  if (err) {
+    card.querySelector("h1").textContent = "Authorization failed";
+    card.querySelector("p").className = "err";
+    card.querySelector("p").textContent = p.get("error_description") || err;
+    codeEl.style.display = "none";
+    document.getElementById("copy").style.display = "none";
+  } else if (code) {
+    codeEl.textContent = code;
+    document.getElementById("copy").onclick = function () {
+      navigator.clipboard.writeText(code).then(function () {
+        document.getElementById("copy").textContent = "Copied ✓";
+      });
+    };
+  }
+</script>
+</body>
+</html>

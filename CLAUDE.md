@@ -18,13 +18,15 @@ config, just commit plainly under that identity.
 
 ## Architecture
 
-- `app.py` - Tkinter GUI: SetupFrame (Trakt app credentials) -> AuthFrame (device-code
-  auth) -> DashboardFrame (live status, settings, history). Background thread
+- `app.py` - Tkinter GUI: SetupFrame (Trakt app credentials) -> AuthFrame (PKCE auth:
+  browser authorize + paste the code from the hosted https callback page) ->
+  DashboardFrame (live status, settings, history). Background thread
   (`scrobble_loop`) polls PotPlayer and talks to Trakt; communicates with the GUI thread
   via a `queue.Queue` consumed by `pump_events` on `after()`.
 - `main.py` - headless CLI equivalent of the scrobble loop, no GUI.
 - `potplayer_ctl.py` - PotPlayer control/query via `SendMessage`.
-- `trakt_client.py` - Trakt OAuth device flow, search, scrobble, ratings.
+- `trakt_client.py` - Trakt OAuth PKCE flow (authorize URL + code exchange, no secret),
+  search, scrobble, ratings. Redirect URI is the GitHub Pages callback in `docs/`.
 - `matcher.py` - filename -> movie/episode guess via `guessit`.
 - `history.py` - appends JSONL events, `load_summary()` aggregates them per watched item.
 - `autorun.py` - HKCU Run-key toggle for "start with Windows".

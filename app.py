@@ -1,4 +1,5 @@
 import queue
+import secrets
 import sys
 import threading
 import time
@@ -14,12 +15,11 @@ import installer
 import ratings
 from matcher import identify
 from paths import resource_dir
+import trakt_client
 from potplayer_ctl import get_state
-from trakt_client import AuthDenied, AuthPending, TraktClient
+from trakt_client import REDIRECT_URI, TraktClient
 
 ICON_PATH = resource_dir() / "icon.ico"
-
-REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 POLL_INTERVAL_SECONDS = 10
 
 BG = "#1e1f26"
@@ -143,101 +143,78 @@ class SetupFrame(tk.Frame):
         entry.pack(fill="x", ipady=5)
 
     def open_trakt(self):
-        webbrowser.open("https://app.trakt.tv/settings/apps/api/new")
+        webbrowser.open("https://developer.trakt.tv/")
 
     def on_continue(self):
         cid = self.client_id_var.get().strip()
         if not cid:
             self.error_lbl.configure(text="Client ID is required.")
             return
-        self.app.client.set_credentials(cid, "")
+        self.app.client.set_credentials(cid)
         self.app.show(AuthFrame)
 
 
 class AuthFrame(tk.Frame):
-    """Step 2: Trakt device-code authorization."""
+    """Step 2: Trakt authorization via the PKCE flow.
+
+    Opens Trakt's authorize page in the browser; after the user approves, the
+    https callback page shows an authorization code they paste back here, which
+    we exchange for tokens. No client secret involved.
+    """
 
     def __init__(self, parent, app: App):
         super().__init__(parent, bg=BG, padx=30, pady=24)
         self.app = app
-        self._stop = False
+        self.verifier, challenge = trakt_client.new_pkce()
+        self.auth_url = app.client.authorize_url(challenge, state=secrets.token_hex(8))
 
         heading(self, "Authorize with Trakt").pack(anchor="w", pady=(0, 6))
-        self.status_lbl = body(self, "Requesting a device code...")
-        self.status_lbl.pack(anchor="w", pady=(0, 20))
+        body(self, "A Trakt page is opening in your browser. Approve potrakt there, "
+                   "then copy the authorization code it shows and paste it below.").pack(
+            anchor="w", pady=(0, 16))
 
-        self.code_lbl = tk.Label(self, text="", font=("Consolas", 28, "bold"), fg=ACCENT, bg=BG)
-        self.code_lbl.pack(pady=(0, 8))
+        secondary_button(self, "Re-open the Trakt authorize page", self.open_auth).pack(anchor="w")
 
-        self.current_code = None
-        self.copy_btn = secondary_button(self, "Copy code", self.copy_code)
-        self.copy_btn.configure(state="disabled")
-        self.copy_btn.pack(pady=(0, 8))
+        body(self, "Authorization code:").pack(anchor="w", pady=(16, 4))
+        self.code_var = tk.StringVar()
+        entry = tk.Entry(self, textvariable=self.code_var, font=("Consolas", 10), bg=PANEL,
+                         fg=FG, relief="flat", insertbackground=FG)
+        entry.pack(fill="x", ipady=5)
 
-        self.link_btn = secondary_button(self, "", None)
-        self.link_btn.pack()
-        self.link_btn.pack_forget()
+        self.status_lbl = tk.Label(self, text="", fg="#ff8080", bg=BG, font=("Segoe UI", 9))
+        self.status_lbl.pack(anchor="w", pady=(6, 0))
 
-        self.back_btn = secondary_button(self, "Back", lambda: app.show(SetupFrame))
-        self.back_btn.pack(side="left", pady=(24, 0))
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", pady=(16, 0))
+        secondary_button(row, "Back", lambda: app.show(SetupFrame)).pack(side="left")
+        self.submit_btn = primary_button(row, "Connect", self.submit)
+        self.submit_btn.pack(side="right")
 
-        self.after(200, self.start_device_flow)
+        self.after(300, self.open_auth)
 
-    def start_device_flow(self):
-        threading.Thread(target=self._request_code, daemon=True).start()
+    def open_auth(self):
+        webbrowser.open(self.auth_url)
 
-    def _request_code(self):
+    def submit(self):
+        code = self.code_var.get().strip()
+        if not code:
+            self.status_lbl.configure(text="Paste the authorization code first.")
+            return
+        self.submit_btn.configure(state="disabled")
+        self.status_lbl.configure(text="Exchanging code with Trakt...", fg=MUTED)
+        threading.Thread(target=self._exchange, args=(code,), daemon=True).start()
+
+    def _exchange(self, code):
         try:
-            data = self.app.client.request_device_code()
+            self.app.client.exchange_code(code, self.verifier)
         except Exception as exc:
-            self.after(0, lambda: self._show_error(f"Could not reach Trakt: {exc}"))
+            self.after(0, lambda: self._failed(exc))
             return
-        self.after(0, lambda: self._show_code(data))
+        self.after(0, lambda: self.app.show(DashboardFrame))
 
-    def _show_error(self, msg):
-        self.status_lbl.configure(text=msg, fg="#ff8080")
-
-    def _show_code(self, data):
-        self.status_lbl.configure(text="Enter this code at the link below:")
-        self.code_lbl.configure(text=data["user_code"])
-        self.current_code = data["user_code"]
-        self.copy_btn.configure(state="normal")
-        url = data["verification_url"]
-        self.link_btn.configure(text=f"Open {url}", command=lambda: webbrowser.open(url))
-        self.link_btn.pack()
-        webbrowser.open(url)
-        threading.Thread(target=self._poll, args=(data,), daemon=True).start()
-
-    def copy_code(self):
-        if not self.current_code:
-            return
-        self.clipboard_clear()
-        self.clipboard_append(self.current_code)
-        self.status_lbl.configure(text="Code copied — paste it at the link below:")
-
-    def _poll(self, data):
-        interval = data["interval"]
-        deadline = time.time() + data["expires_in"]
-        while time.time() < deadline and not self._stop:
-            time.sleep(interval)
-            try:
-                if self.app.client.poll_device_token(data["device_code"]):
-                    self.after(0, lambda: self.app.show(DashboardFrame))
-                    return
-            except AuthPending:
-                continue
-            except AuthDenied as exc:
-                self.after(0, lambda: self._show_error(f"Authorization failed: {exc}"))
-                return
-            except Exception as exc:
-                self.after(0, lambda: self._show_error(f"Error: {exc}"))
-                return
-        if not self._stop:
-            self.after(0, lambda: self._show_error("Code expired. Go back and try again."))
-
-    def destroy(self):
-        self._stop = True
-        super().destroy()
+    def _failed(self, exc):
+        self.submit_btn.configure(state="normal")
+        self.status_lbl.configure(text=f"Couldn't authorize: {exc}", fg="#ff8080")
 
 
 class DashboardFrame(tk.Frame):

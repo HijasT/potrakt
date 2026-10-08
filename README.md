@@ -19,6 +19,10 @@ start/pause/stop check-ins automatically.
   device-code flow, no manual config file editing
 - Persistent activity history with a per-item view, rating (1-10), and a direct link to
   the item's Trakt page
+- **Unrated** tab: everything you've watched on Trakt but haven't rated yet, split into
+  movies / shows / seasons / episodes (most recent 50 episodes, 20 seasons, 10 shows).
+  Rate anything inline (1-10); season rows show your average episode rating and show rows
+  your average season rating; a Refresh button re-pulls the latest from Trakt
 - Optional rating popup when something finishes (≥80% watched)
 - Optional "start with Windows" toggle
 - Creates its own Desktop / Start Menu shortcuts
@@ -36,11 +40,12 @@ start/pause/stop check-ins automatically.
    been published).
 2. Run it.
 3. On first launch it'll walk you through:
-   - Creating a Trakt API app at
-     [app.trakt.tv/settings/apps/api/new](https://app.trakt.tv/settings/apps/api/new)
-     (redirect URI: `urn:ietf:wg:oauth:2.0:oob`)
-   - Pasting in the Client ID / Client Secret
-   - Authorizing via Trakt's device code (a code + link, no password typed into potrakt)
+   - Creating a Trakt API app at [developer.trakt.tv](https://developer.trakt.tv/)
+     with redirect URI `https://hijast.github.io/potrakt/callback/`
+   - Pasting in the Client ID (Trakt no longer issues a client secret; potrakt signs in
+     with PKCE, which needs only the Client ID)
+   - Authorizing in your browser, then pasting back the authorization code the callback
+     page shows you (no password typed into potrakt)
 4. Once authorized it opens the dashboard and starts watching PotPlayer automatically.
 
 ## Running from source
@@ -89,10 +94,11 @@ resolved against Trakt's `/search` endpoint.
 
 | File | Purpose |
 |---|---|
-| `app.py` | Tkinter GUI - setup, Trakt auth, dashboard, history window, rating popup |
+| `app.py` | Tkinter GUI - setup, Trakt auth, dashboard, history window, unrated tab, rating popup |
 | `main.py` | Headless CLI runner (no GUI) |
+| `ratings.py` | Diffs watched vs rated into the unrated lists + rating averages |
 | `potplayer_ctl.py` | Talks to PotPlayer via `SendMessage` |
-| `trakt_client.py` | Trakt OAuth device flow, search, scrobble, ratings |
+| `trakt_client.py` | Trakt OAuth PKCE flow, search, scrobble, ratings |
 | `matcher.py` | Filename → movie/episode guess |
 | `history.py` | Persistent JSONL activity log + per-item aggregation |
 | `autorun.py` | Windows "run at startup" registry toggle |
