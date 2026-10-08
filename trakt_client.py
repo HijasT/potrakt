@@ -10,6 +10,9 @@ import config
 
 API_BASE = "https://api.trakt.tv"
 AUTHORIZE_URL = "https://auth.trakt.tv/oauth/authorize"
+# Trakt's Cloudflare rejects the default python-requests user-agent (403, CF
+# error 1010), so every request must send a real one.
+USER_AGENT = "potrakt/1.0 (+https://github.com/HijasT/potrakt)"
 # Trakt requires an https redirect URI (no OOB / localhost). This static page
 # just displays the ?code= for the user to paste back into potrakt.
 REDIRECT_URI = "https://hijast.github.io/potrakt/callback/"
@@ -38,6 +41,8 @@ def new_pkce():
 class TraktClient:
     def __init__(self):
         self.cfg = config.load()
+        self.session = requests.Session()
+        self.session.headers["User-Agent"] = USER_AGENT
 
     def has_credentials(self):
         # Trakt no longer issues a client_secret; PKCE signs users in with the
@@ -87,7 +92,7 @@ class TraktClient:
 
     def exchange_code(self, code, code_verifier):
         """Trade the pasted authorization code for tokens (PKCE, no secret)."""
-        r = requests.post(
+        r = self.session.post(
             f"{API_BASE}/oauth/token",
             json={
                 "code": code.strip(),
@@ -101,7 +106,7 @@ class TraktClient:
         self._store_token(r.json())
 
     def _refresh(self):
-        r = requests.post(
+        r = self.session.post(
             f"{API_BASE}/oauth/token",
             json={
                 "refresh_token": self.cfg["refresh_token"],
@@ -125,13 +130,13 @@ class TraktClient:
         params = {"query": title}
         if year:
             params["years"] = str(year)
-        r = requests.get(f"{API_BASE}/search/movie", params=params, headers=self.headers())
+        r = self.session.get(f"{API_BASE}/search/movie", params=params, headers=self.headers())
         r.raise_for_status()
         results = r.json()
         return results[0]["movie"] if results else None
 
     def search_show(self, title):
-        r = requests.get(f"{API_BASE}/search/show", params={"query": title}, headers=self.headers())
+        r = self.session.get(f"{API_BASE}/search/show", params={"query": title}, headers=self.headers())
         r.raise_for_status()
         results = r.json()
         return results[0]["show"] if results else None
@@ -139,7 +144,7 @@ class TraktClient:
     # ---- scrobble ----
 
     def scrobble(self, action, payload):
-        r = requests.post(f"{API_BASE}/scrobble/{action}", json=payload, headers=self.headers())
+        r = self.session.post(f"{API_BASE}/scrobble/{action}", json=payload, headers=self.headers())
         if r.status_code == 404:
             raise RuntimeError(
                 "Trakt couldn't match this title/episode (404) - the filename guess "
@@ -151,7 +156,7 @@ class TraktClient:
     # ---- ratings ----
 
     def rate(self, payload):
-        r = requests.post(f"{API_BASE}/sync/ratings", json=payload, headers=self.headers())
+        r = self.session.post(f"{API_BASE}/sync/ratings", json=payload, headers=self.headers())
         r.raise_for_status()
         return r.json()
 
@@ -166,7 +171,7 @@ class TraktClient:
         page, out = 1, []
         while True:
             params["page"] = page
-            r = requests.get(f"{API_BASE}{path}", params=params, headers=self.headers())
+            r = self.session.get(f"{API_BASE}{path}", params=params, headers=self.headers())
             r.raise_for_status()
             out.extend(r.json())
             total = int(r.headers.get("X-Pagination-Page-Count") or 1)
@@ -193,7 +198,7 @@ class TraktClient:
         (season, number)->itself; by_abs maps absolute number->(season, number)."""
         cache = self.__dict__.setdefault("_ep_cache", {})
         if show_id not in cache:
-            r = requests.get(
+            r = self.session.get(
                 f"{API_BASE}/shows/{show_id}/seasons",
                 params={"extended": "episodes,full"}, headers=self.headers(),
             )
